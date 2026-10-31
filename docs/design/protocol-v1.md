@@ -899,3 +899,65 @@ answer, which is what the **server** is offering this host. The two are
 different questions and the server has only ever been able to answer the
 second. A server that sees no `supported` key is talking to an agent built
 before the key existed.
+# Target-based Windows directory operations
+
+The server must support both `directory-join-mj1` and
+`directory-task-operations-v3`. `GET /agent/v1/enroll` advertises these tokens in
+`X-FOG-Agent-Features`, separated by commas or whitespace. Additional tokens
+are allowed; substrings are not capabilities. Trusted HTTPS and the existing
+certificate principal remain required. Unreachable/temporarily unavailable
+and reachable-but-unsupported servers are distinct errors, both fail closed.
+No exception for AD-disabled hosts is defined for an older server.
+
+The Windows startup path checks a due local update rollback before performing
+network feature or identity checks. A failed probe cannot suppress that
+deadline. A successful feature probe is not a successful authenticated poll
+and does not clear probation.
+
+Before normal polling the agent checks its live SMBIOS/MAC identity through
+`POST /agent/v1/identity/check`. An explicit mismatch rotates the local key
+using existing Enrollment; ambiguity or failed checks stop normal work.
+Unresolved directory markers are retained. A verified marker belonging to the
+old principal is archived byte-for-byte during explicit identity rotation.
+
+Windows polls declare both features and a read-only `directory_attempt`
+summary of the existing local native marker. This summary is not persisted as
+a new classification; it prevents server OU writes while a local operation is
+uncertain, even when the server has no matching operation record. The server
+requests a revision-bound directory observation: current and pending names,
+domain, role, boot, DC reachability and health. A fresh unconsumed completed
+Deploy triggers one target Join/Rebind even when the machine is healthy and
+already has the desired name. Enrollment alone does not trigger a mutation.
+A safe normal rename uses the existing native implementation;
+name reassignment, an existing Target or an authorized restore may require
+target rebind. No source AD GUID/SID is required or stored on the v2 path.
+
+Plans use `version: 2`, an attempt ID, Host ID, configuration revision,
+expected names, domain/DC, `task_id` (zero for non-Deploy operations), and operation
+`rename`, `rebind`, or task-bound Workgroup `join`. Existing targets
+are bound to confirmed GUID/SID; successful absence and account-creation
+permission are required for create. Creation defaults ON; explicit OFF is
+preserved. LDAP errors never mean account absence.
+
+`POST /agent/v1/directory/rejoin/start` atomically claims the current plan
+before returning the existing join credential. The agent reserves its local
+marker before claiming, then persists `may_have_run` before native dispatch.
+Task eligibility is rechecked and its high-water consumed with the claim.
+Existing rebind uses `0x421`; create uses `0x20423`. Task-bound Workgroup Join
+uses the established Windows Join/reuse implementation through the same
+claim and marker, preventing a second Rebind for that Deploy. Join without a
+Deploy retains the ordinary provider and cooldown. Results echo `task_id` on the existing
+directory result contract. Native failure or unknown outcome never silently
+falls back to Repair, unjoin or an old-account rename.
+
+The existing reboot coordinator performs the required restart once. The agent
+then verifies name/domain/boot/health; the server rechecks the target object
+before verified. A later same-name recovery requires a new completed Deploy
+or explicit administrator authorization, not a negative health result alone.
+Legacy v1 markers remain readable for review but cannot start or replay a new
+operation, even when presented with a new plan.
+
+Successful user online logon and saved Netlogon health are separate evidence.
+Transient PDC1311 observations remain unresolved; TC status0 alone is not a
+health override. This extension does not implement Sysprep/generalization,
+change SID, or broaden Microsoft's support policy for Windows cloning.

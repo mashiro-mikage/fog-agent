@@ -59,6 +59,7 @@ const MaxError = 255
 // a domain configured -- so a joined estate, which is most of an estate most
 // of the time, never carries a join credential at all.
 type Policy struct {
+	Rejoin *RejoinPlan `json:"rejoin,omitempty"`
 	// Domain is the DNS domain to join: corp.example.com.
 	Domain string `json:"domain"`
 	// Netbios is the short name, where the server knows it. Used only to
@@ -133,6 +134,9 @@ func (a Action) String() string {
 type Result struct {
 	Status string
 	Error  string
+	// NativeStatus preserves a definite native failure without treating a
+	// partially completed local name update as a replayable failure.
+	NativeStatus uint32
 	// Reboot is set when the platform needs one for the join to take
 	// effect. Windows always does; Linux does not.
 	Reboot bool

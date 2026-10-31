@@ -18,6 +18,7 @@ import (
 
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/autologout"
+	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 	"github.com/FOGProject/fog-agent/internal/usersession"
@@ -169,11 +170,29 @@ type Config struct {
 // State is the on-disk material. Load never generates anything by itself;
 // callers decide when a key should exist.
 type State struct {
-	Dir      string
-	Key      *ecdsa.PrivateKey
-	Identity *identity.Host // identity recorded at key generation, nil if none
-	Cert     []byte         // PEM, nil until issued
-	Config   Config
+	DirectoryCheck       *DirectoryCheck
+	DirectoryObservation *DirectoryObservation
+	DirectoryObservedAt  time.Time
+	Dir                  string
+	Key                  *ecdsa.PrivateKey
+	Identity             *identity.Host // identity recorded at key generation, nil if none
+	Cert                 []byte         // PEM, nil until issued
+	Config               Config
+}
+
+// DirectoryCheck is read-only policy metadata, never a join credential.
+type DirectoryCheck struct {
+	Name     string `json:"name"`
+	Domain   string `json:"domain"`
+	DC       string `json:"dc"`
+	Revision string `json:"revision"`
+}
+
+type DirectoryObservation struct {
+	directoryjoin.RejoinObservation
+	Revision    string `json:"revision"`
+	DC          string `json:"dc"`
+	DCReachable bool   `json:"dc_reachable"`
 }
 
 // Load reads whatever exists in dir. A missing key is not an error; a key

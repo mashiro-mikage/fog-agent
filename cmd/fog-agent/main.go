@@ -92,7 +92,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   fog-agent identity                      print the SMBIOS identity and MACs
-  fog-agent enroll --server URL --ca FILE [--token T] [--once] [--dir DIR]
+  fog-agent enroll --server URL --ca FILE [--token T] [--once] [--dir DIR] [--reset-identity]
   fog-agent run [--server URL] [--ca FILE] [--token T] [--once] [--dir DIR]
                                           enroll if needed, then poll the server
   fog-agent renew [--dir DIR]             renew the certificate now, whatever its expiry
@@ -219,7 +219,13 @@ var readIdentity = identity.Read
 // builds the request protocol-v1.md describes.
 func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, error) {
 	live := readIdentity()
-	regen, err := st.EnsureKey(live)
+	regen := false
+	var err error
+	if runtime.GOOS != "windows" {
+		regen, err = st.EnsureKey(live)
+	} else if st.Key == nil {
+		err = errors.New("MJ-1 identity must be prepared before enrollment")
+	}
 	if err != nil {
 		return enroll.Request{}, err
 	}
@@ -231,7 +237,12 @@ func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, 
 		return enroll.Request{}, err
 	}
 	hostname, _ := os.Hostname()
+	var features []string
+	if runtime.GOOS == "windows" {
+		features = []string{enroll.MJ1Feature}
+	}
 	return enroll.Request{
+		Features: features,
 		Protocol: enroll.Protocol, AgentVersion: Version,
 		OS: runtime.GOOS, Arch: runtime.GOARCH, Hostname: hostname,
 		Identity: live, CSRPEM: string(csr), Token: token,
@@ -287,6 +298,7 @@ func cmdEnroll(args []string) error {
 	fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	f := addCommonFlags(fs)
 	once := fs.Bool("once", false, "send one request and exit instead of waiting for approval")
+	reset := fs.Bool("reset-identity", false, "explicit administrator reset; stop the service first")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -295,6 +307,29 @@ func cmdEnroll(args []string) error {
 		return err
 	}
 	out := &sayer{}
+	if runtime.GOOS == "windows" {
+		probe, e := st.Client()
+		if e != nil {
+			return e
+		}
+		if e = probe.RequireMJ1(context.Background()); e != nil {
+			return e
+		}
+		if *reset {
+			if e = allowIdentityReset(); e != nil {
+				return e
+			}
+			// An operator reset is not proof that the saved Host was the clone source.
+			if e = st.RotateIdentity(readIdentity()); e != nil {
+				return e
+			}
+		}
+		if e = prepareMJ1(context.Background(), st, probe); e != nil {
+			return e
+		}
+	} else if *reset {
+		return errors.New("identity reset is supported on Windows only")
+	}
 	req, err := enrollRequest(st, *f.token, out)
 	if err != nil {
 		return err
@@ -350,17 +385,22 @@ func runAgent(ctx context.Context, args []string) error {
 	// certificate as well as the key, so a clone never went that way: it
 	// polled as the machine the image was captured from, and applied that
 	// host's name, tasks and snapins to itself.
-	hadKey := st.Key != nil
-	regen, err := st.EnsureKey(readIdentity())
-	if err != nil {
-		return err
+	if runtime.GOOS == "windows" {
+		if err = prepareWindowsRun(ctx, st, client, out); err != nil {
+			return err
+		}
+	} else {
+		hadKey := st.Key != nil
+		regen, e := st.EnsureKey(readIdentity())
+		if e != nil {
+			return e
+		}
+		if regen && hadKey {
+			out.say("cloned or reimaged disk: enrolling this machine")
+		}
 	}
-	switch {
-	case regen && hadKey:
-		out.say("this state was made on another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine")
-	case regen:
-		out.say("generated a new key for this machine's identity")
-	}
+	identityVerified := false
+	identitySignature := ""
 	watch := &sessionWatcher{}
 	for {
 		// Checked every time round, not only at start. A binary that
@@ -396,11 +436,32 @@ func runAgent(ctx context.Context, args []string) error {
 		if err := client.UseCertificate(st.Cert, st.Key); err != nil {
 			return err
 		}
+		if runtime.GOOS == "windows" {
+			live := readIdentity()
+			encoded, _ := json.Marshal(live)
+			if !identityVerified || identitySignature != string(encoded) {
+				a, e := client.CheckIdentity(ctx, live)
+				if e != nil {
+					return e
+				}
+				if a.Identity.Status == "mismatch" {
+					if e = st.RotateIdentity(live); e != nil {
+						return e
+					}
+					identityVerified = false
+					continue
+				}
+				identityVerified = true
+				identitySignature = string(encoded)
+			}
+		}
 		wait := 5 * time.Minute
 		// The poll carries what this agent applied; the server answers
+		directoryCheckChanged := false
 		// with the state only when that is not current. A build that
 		// learned a capability sends nothing, so it gets the state once.
 		req := enroll.PollRequest{AgentVersion: Version, AppliedRevision: st.Config.AppliedRevision, WantState: driftMayBeDue(st)}
+		attachMJ1(st, &req)
 		if st.Config.AppliedWith != supportedCapabilities {
 			req.AppliedRevision = ""
 		}
@@ -411,6 +472,22 @@ func runAgent(ctx context.Context, args []string) error {
 		sent := attachFacts(st, &req, now, out)
 		sessionDigest, sessionsSent := watch.attach(st, &req, now)
 		resp, err := client.Poll(ctx, req)
+		if err == nil && runtime.GOOS == "windows" {
+			if changed, e := refreshDirectoryCheck(st, resp.DirectoryCheck); e != nil {
+				out.say("directory observation: " + e.Error())
+			} else {
+				directoryCheckChanged = changed
+			}
+			operationBlocked := false
+			if e := processRejoin(ctx, st, client, resp.DirectoryRejoin, out); e != nil {
+				out.say("directory rejoin: " + e.Error())
+				operationBlocked = true
+			}
+			if (resp.DirectoryHold || operationBlocked || resp.DirectoryRejoin != nil) && resp.State != nil {
+				resp.State.Directory = nil
+				resp.State.Hostname = nil
+			}
+		}
 		switch {
 		case errors.Is(err, enroll.ErrCertificateUnknown):
 			// The server has this certificate and says it binds to no
@@ -548,6 +625,9 @@ func runAgent(ctx context.Context, args []string) error {
 		}
 		if *once {
 			return err
+		}
+		if directoryCheckChanged && wait > 2*time.Second {
+			wait = 2 * time.Second
 		}
 		// Sleep until the poll is due or a power schedule fires,
 		// whichever is first; a firing runs the coordinator right away.
@@ -1229,10 +1309,38 @@ func drift(ctx context.Context, st *enroll.State, client *enroll.Client, desired
 // a result, and reboots when allowed. It is the only caller of
 // reboot.Execute in the agent.
 func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
+	return coordinateForPlatform(ctx, st, client, out, runtime.GOOS == "windows")
+}
+
+var rebootUsers = reboot.LoggedIn
+var requestReboot = reboot.Execute
+
+func coordinateForPlatform(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer, windows bool) error {
 	if len(st.Config.PendingReboot) == 0 {
 		return nil
 	}
-	users, err := reboot.LoggedIn()
+	pending := st.Config.PendingReboot
+	var rejoinWithheld []reboot.Reason
+	var attempt *directoryjoin.Attempt
+	var rejoinRebootClaimed bool
+	if windows {
+		var markerErr error
+		attempt, markerErr = directoryjoin.LoadAttempt(st.Dir)
+		pending = nil
+		for _, reason := range st.Config.PendingReboot {
+			// A completed/archived operation cannot authorize another reboot.
+			// Only an unrequested awaiting_reboot latch can be acquired below.
+			if reason.Source == "directory-rejoin" && (markerErr != nil || attempt == nil || attempt.Phase != "awaiting_reboot" || attempt.RebootRequested) {
+				continue
+			}
+			if reason.Source == reboot.SourceTask && (markerErr != nil || (attempt != nil && attempt.Phase != "verified")) {
+				rejoinWithheld = append(rejoinWithheld, reason)
+			} else {
+				pending = append(pending, reason)
+			}
+		}
+	}
+	users, err := rebootUsers()
 	if err != nil {
 		return err
 	}
@@ -1251,11 +1359,15 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	var armTo netboot.Option
 	arming := false
 	var findErr error
-	if hasTaskReason(st.Config.PendingReboot) {
+	if hasTaskReason(pending) {
 		armTo, findErr = findNetboot()
 		arming = findErr == nil
 	}
-	reasons, withheld, refusal := planReboot(st.Config.PendingReboot, findErr)
+	reasons, withheld, refusal := planReboot(pending, findErr)
+	withheld = append(withheld, rejoinWithheld...)
+	if len(rejoinWithheld) > 0 && len(reasons) == 0 {
+		refusal = "directory rejoin verification holds imaging"
+	}
 	if refusal != "" {
 		out.say("netboot: " + refusal)
 	} else if findErr != nil && hasTaskReason(st.Config.PendingReboot) {
@@ -1299,6 +1411,18 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	// Persist before asking: the reboot is asynchronous and the reasons
 	// are satisfied the moment it is accepted. A refused request puts
 	// them back.
+	if attempt != nil && !attempt.RebootRequested {
+		for _, reason := range reasons {
+			if reason.Source == "directory-rejoin" {
+				if e := directoryjoin.SetAttemptRebootRequested(st.Dir, attempt, true); e != nil {
+					return e
+				}
+				attempt.RebootRequested = true
+				rejoinRebootClaimed = true
+				break
+			}
+		}
+	}
 	for _, r := range reasons {
 		if r.TaskID != 0 {
 			st.Config.RebootedForTask = r.TaskID
@@ -1312,6 +1436,7 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	// 3.2), and an hour of the old account is an hour of a second rename.
 	st.Config.FactsChecked = time.Time{}
 	if err := st.SaveConfig(); err != nil {
+		_ = refusedDirectoryReboot(st, attempt, rejoinRebootClaimed)
 		return err
 	}
 	// Armed as late as possible, and undone if the reboot does not happen:
@@ -1320,6 +1445,9 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	// reason, which is a surprise nobody asked for.
 	if arming {
 		if err := netboot.Arm(armTo); err != nil {
+			if e := refusedDirectoryReboot(st, attempt, rejoinRebootClaimed); e != nil {
+				return e
+			}
 			st.Config.PendingReboot = append(withheld, reasons...)
 			st.Config.RebootedForTask = 0
 			_ = st.SaveConfig()
@@ -1327,7 +1455,10 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 		}
 		out.say("netboot: armed " + armTo.String() + " for one boot")
 	}
-	if err := reboot.Execute(d.Mode, d.Delay, "FOG: "+d.Mode+" for "+d.Why); err != nil {
+	if err := requestReboot(d.Mode, d.Delay, "FOG: "+d.Mode+" for "+d.Why); err != nil {
+		if e := refusedDirectoryReboot(st, attempt, rejoinRebootClaimed); e != nil {
+			return e
+		}
 		if arming {
 			if derr := netboot.Disarm(); derr != nil {
 				out.say("netboot: could not disarm after a failed reboot: " + derr.Error())
@@ -1338,6 +1469,19 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 		_ = st.SaveConfig()
 		return err
 	}
+	return nil
+}
+
+// Execute returns an error only for a refused request (in-progress is success).
+// A crash with an uncertain request keeps the latch; a known refusal may retry.
+func refusedDirectoryReboot(st *enroll.State, attempt *directoryjoin.Attempt, claimed bool) error {
+	if !claimed || attempt == nil || !attempt.RebootRequested {
+		return nil
+	}
+	if err := directoryjoin.SetAttemptRebootRequested(st.Dir, attempt, false); err != nil {
+		return err
+	}
+	attempt.RebootRequested = false
 	return nil
 }
 
@@ -1449,6 +1593,18 @@ func cmdRenew(args []string) error {
 	}
 	if err := client.UseCertificate(st.Cert, st.Key); err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows" {
+		if e := client.RequireMJ1(context.Background()); e != nil {
+			return e
+		}
+		a, e := client.CheckIdentity(context.Background(), readIdentity())
+		if e != nil {
+			return e
+		}
+		if a.Identity.Status != "matched" {
+			return errors.New("identity mismatch: renewal stopped")
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -1596,6 +1752,15 @@ func prepareState(f commonFlags, out *sayer) (*enroll.State, error) {
 	client, err := st.Client()
 	if err != nil {
 		return nil, err
+	}
+	if runtime.GOOS == "windows" {
+		if err = prepareMJ1(context.Background(), st, client); err != nil {
+			if errors.Is(err, enroll.ErrMJ1Unavailable) {
+				out.say("MJ-1 feature check unavailable; service staged without enrollment")
+				return st, nil
+			}
+			return nil, err
+		}
 	}
 	req, err := enrollRequest(st, st.Config.PendingToken, out)
 	if err != nil {

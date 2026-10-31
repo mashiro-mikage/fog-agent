@@ -4,6 +4,8 @@ package directoryjoin
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -69,6 +71,19 @@ func (Windows) Available() (bool, string) {
 // machines live gets a window, however short, where a new machine sits in
 // the default container inheriting whatever policy is linked there.
 func (Windows) Join(ctx context.Context, p Policy) Result {
+	var result Result
+	err := withDirectoryMutation(func() error {
+		result = joinWindowsLocked(ctx, p)
+		return nil
+	})
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func joinWindowsLocked(ctx context.Context, p Policy) Result {
 	domain, err := syscall.UTF16PtrFromString(p.Domain)
 	if err != nil {
 		return Result{Status: StatusFailed, Error: "domain is not usable: " + err.Error()}
@@ -136,6 +151,19 @@ func (Windows) Join(ctx context.Context, p Policy) Result {
 // call wrote: that pending name is what the hostname capability and the
 // next Decide read to know the rename is done.
 func (Windows) Rename(ctx context.Context, p Policy) Result {
+	var result Result
+	err := withDirectoryMutation(func() error {
+		result = renameWindowsLocked(ctx, p)
+		return nil
+	})
+	if err != nil {
+		result.Status = StatusFailed
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func renameWindowsLocked(ctx context.Context, p Policy) Result {
 	name, err := syscall.UTF16PtrFromString(p.RenameTo)
 	if err != nil {
 		return Result{Status: StatusFailed, Error: "new name is not usable: " + err.Error()}
@@ -157,7 +185,7 @@ func (Windows) Rename(ctx context.Context, p Policy) Result {
 		uintptr(netsetupAcctCreate),
 	)
 	if status != 0 {
-		return Result{Status: StatusFailed, Error: renameError(uint32(status))}
+		return Result{Status: StatusFailed, Error: renameError(uint32(status)), NativeStatus: uint32(status)}
 	}
 	if r, _, e := procSetComputerNameEx.Call(computerNamePhysicalDnsHostname, uintptr(unsafe.Pointer(name))); r == 0 {
 		// The object is renamed; only the local DNS name lagged. Reported
@@ -211,4 +239,35 @@ func joinError(status uint32) string {
 		return "the computer object exists and domain policy blocks this account from reusing it (NERR_AccountReuseBlockedByPolicy)"
 	}
 	return syscall.Errno(status).Error()
+}
+
+// JoinForPlan preserves the established Workgroup Join flags/reuse policy.
+// Only a server-claimed concrete Deploy operation can enter this wrapper.
+func JoinForPlan(ctx context.Context, p Policy, plan RejoinPlan) (uint32, error) {
+	if plan.Version != 2 || plan.Operation != "join" || plan.Validate(plan.HostID) != nil {
+		return 0, errors.New("invalid task join plan")
+	}
+	var code uint32
+	err := withDirectoryMutation(func() error {
+		var callErr error
+		code, callErr = joinForPlanWindowsLocked(ctx, p, plan)
+		return callErr
+	})
+	return code, err
+}
+
+func joinForPlanWindowsLocked(ctx context.Context, p Policy, plan RejoinPlan) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	o, err := ObserveRejoin(plan.DC)
+	if err != nil || o.Domain != "" || !strings.EqualFold(o.CurrentName, plan.ExpectedCurrent) || !strings.EqualFold(o.PendingName, plan.Name) || (o.Role != "workstation" && o.Role != "member_server" && o.Role != "standalone_server") {
+		return 0, errors.New("task join observation changed before native")
+	}
+	p.Domain = plan.Domain + `\` + plan.DC
+	result := joinWindowsLocked(ctx, p)
+	if result.Status != StatusJoined {
+		return 0, errors.New("task join outcome requires review")
+	}
+	return 0, nil
 }

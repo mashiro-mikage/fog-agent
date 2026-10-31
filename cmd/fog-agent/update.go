@@ -132,6 +132,13 @@ func manifestClient(st *enroll.State) *http.Client {
 // Returning true means the caller must exit non-zero so the service
 // manager starts what was just restored.
 func checkProbation(st *enroll.State, out *sayer) bool {
+	return checkProbationWithRevert(st, out, func(reason string) error {
+		_, err := update.Revert(updateConfig(st), reason)
+		return err
+	})
+}
+
+func checkProbationWithRevert(st *enroll.State, out *sayer, revert func(string) error) bool {
 	p, err := update.LoadProbation(st.Dir)
 	if err != nil {
 		out.say("update: " + err.Error())
@@ -147,9 +154,7 @@ func checkProbation(st *enroll.State, out *sayer) bool {
 	}
 	out.say(fmt.Sprintf("update: %s did not complete a poll before %s; going back to %s",
 		p.To, p.Deadline.Format(time.RFC3339), p.From))
-	if _, err := update.Revert(updateConfig(st),
-		fmt.Sprintf("no successful poll before %s",
-			p.Deadline.Format(time.RFC3339))); err != nil {
+	if err := revert(fmt.Sprintf("no successful poll before %s", p.Deadline.Format(time.RFC3339))); err != nil {
 		// Nothing else to try. Say it loudly rather than carrying on
 		// quietly on a binary that has already failed its window.
 		out.say("update: REVERT FAILED, this host is running " + p.To + " and needs attention: " + err.Error())

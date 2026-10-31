@@ -44,6 +44,7 @@ const Protocol = 1
 
 // Request is the enroll body (protocol-v1.md).
 type Request struct {
+	Features     []string      `json:"features,omitempty"`
 	Protocol     int           `json:"protocol"`
 	AgentVersion string        `json:"agent_version"`
 	OS           string        `json:"os"`
@@ -125,8 +126,19 @@ func classifyUnauthorized(raw []byte) error {
 }
 
 // PollRequest is the poll body (protocol-v1.md).
+type DirectoryAttempt struct {
+	Phase       string `json:"phase"`
+	AttemptID   string `json:"attempt_id,omitempty"`
+	HostID      int    `json:"host_id,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
 type PollRequest struct {
-	AgentVersion string `json:"agent_version"`
+	DirectoryObservation *DirectoryObservation `json:"directory_observation,omitempty"`
+	DirectoryAttempt     *DirectoryAttempt     `json:"directory_attempt,omitempty"`
+	Features             []string              `json:"features,omitempty"`
+	Identity             *identity.Host        `json:"identity,omitempty"`
+	AgentVersion         string                `json:"agent_version"`
 	// AppliedRevision is the revision this agent last applied, compared
 	// by the server for equality only: the desired state rides the answer
 	// when it differs. Empty means "send it".
@@ -173,9 +185,12 @@ type PollRequest struct {
 
 // PollResponse is what the server can do for this host right now.
 type PollResponse struct {
-	Status   string `json:"status"`
-	Protocol int    `json:"protocol"`
-	Host     struct {
+	DirectoryCheck  *DirectoryCheck           `json:"directory_check,omitempty"`
+	DirectoryRejoin *directoryjoin.RejoinPlan `json:"directory_rejoin,omitempty"`
+	DirectoryHold   bool                      `json:"directory_hold"`
+	Status          string                    `json:"status"`
+	Protocol        int                       `json:"protocol"`
+	Host            struct {
 		ID   int    `json:"id"`
 		Name string `json:"name"`
 	} `json:"host"`
@@ -290,10 +305,19 @@ type ResultRequest struct {
 // vocabulary, the raw exit code, the output tail, and for software the
 // version the host has now.
 type ResultItem struct {
-	ID               int    `json:"id"`
-	Status           string `json:"status"`
-	ExitCode         int    `json:"exit_code"`
-	InstalledVersion string `json:"installed_version,omitempty"`
+	AttemptID        string  `json:"attempt_id,omitempty"`
+	ConfigRevision   string  `json:"config_revision,omitempty"`
+	TaskID           int     `json:"task_id"`
+	NativeStatus     *uint32 `json:"native_status,omitempty"`
+	SecureChannel    string  `json:"secure_channel,omitempty"`
+	BootChanged      bool    `json:"boot_changed,omitempty"`
+	CurrentName      string  `json:"current_name,omitempty"`
+	Netbios          string  `json:"netbios"`
+	Domain           string  `json:"domain,omitempty"`
+	ID               int     `json:"id"`
+	Status           string  `json:"status"`
+	ExitCode         int     `json:"exit_code"`
+	InstalledVersion string  `json:"installed_version,omitempty"`
 	// Packets is how many datagrams a wake relay actually put on the wire
 	// (capability wake). Carried as its own field and not left to the
 	// detail sentence because the server stores it as a number an admin
