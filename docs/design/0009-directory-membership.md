@@ -434,7 +434,8 @@ Source GUID/SID management is not part of this contract. Identity ambiguity,
 unresolved legacy markers and unknown native results stop automatic work.
 The existing coordinator handles the restart and post-boot verification.
 
-The current extension is selected by `directory-task-operations-v3`. It stores
+The FOG AD Join/Rejoin enhancement uses
+`directory-task-operations-v1` for Target-bound operations. It stores
 no Clone classification. A completed Deploy is the one-shot authority even for
 a healthy self-restore. Task-bound Workgroup Join participates in the same
 claim/marker; ordinary Workgroup Join without a Deploy retains its existing

@@ -901,8 +901,9 @@ second. A server that sees no `supported` key is talking to an agent built
 before the key existed.
 # Target-based Windows directory operations
 
-The server must support both `directory-join-mj1` and
-`directory-task-operations-v3`. `GET /agent/v1/enroll` advertises these tokens in
+The FOG AD Join/Rejoin enhancement requires the server to support both
+`directory-join-target-v1` and
+`directory-task-operations-v1`. `GET /agent/v1/enroll` advertises these tokens in
 `X-FOG-Agent-Features`, separated by commas or whitespace. Additional tokens
 are allowed; substrings are not capabilities. Trusted HTTPS and the existing
 certificate principal remain required. Unreachable/temporarily unavailable

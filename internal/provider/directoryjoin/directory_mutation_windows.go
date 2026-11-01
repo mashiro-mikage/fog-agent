@@ -80,7 +80,7 @@ func withDirectoryMutation(fn func() error) error {
 	return withDirectoryMutationGuard(`Global\FOG-Agent-DirectoryJoin`, defaultDirectoryMutexOps(), &directoryMutationBlocked, fn)
 }
 
-// A release failure also blocks legacy calls, which do not own an MJ-1 marker.
+// A release failure also blocks legacy calls, which do not own a directory attempt marker.
 // This is a process-local safety latch, not a persisted operation authority.
 var directoryMutationBlocked atomic.Bool
 

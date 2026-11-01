@@ -224,7 +224,7 @@ func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, 
 	if runtime.GOOS != "windows" {
 		regen, err = st.EnsureKey(live)
 	} else if st.Key == nil {
-		err = errors.New("MJ-1 identity must be prepared before enrollment")
+		err = errors.New("directory identity must be prepared before enrollment")
 	}
 	if err != nil {
 		return enroll.Request{}, err
@@ -239,7 +239,7 @@ func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, 
 	hostname, _ := os.Hostname()
 	var features []string
 	if runtime.GOOS == "windows" {
-		features = []string{enroll.MJ1Feature}
+		features = []string{enroll.DirectoryJoinTargetFeature}
 	}
 	return enroll.Request{
 		Features: features,
@@ -312,7 +312,7 @@ func cmdEnroll(args []string) error {
 		if e != nil {
 			return e
 		}
-		if e = probe.RequireMJ1(context.Background()); e != nil {
+		if e = probe.RequireDirectoryFeatures(context.Background()); e != nil {
 			return e
 		}
 		if *reset {
@@ -324,7 +324,7 @@ func cmdEnroll(args []string) error {
 				return e
 			}
 		}
-		if e = prepareMJ1(context.Background(), st, probe); e != nil {
+		if e = prepareDirectoryIdentity(context.Background(), st, probe); e != nil {
 			return e
 		}
 	} else if *reset {
@@ -461,7 +461,7 @@ func runAgent(ctx context.Context, args []string) error {
 		// with the state only when that is not current. A build that
 		// learned a capability sends nothing, so it gets the state once.
 		req := enroll.PollRequest{AgentVersion: Version, AppliedRevision: st.Config.AppliedRevision, WantState: driftMayBeDue(st)}
-		attachMJ1(st, &req)
+		attachDirectoryContext(st, &req)
 		if st.Config.AppliedWith != supportedCapabilities {
 			req.AppliedRevision = ""
 		}
@@ -1595,7 +1595,7 @@ func cmdRenew(args []string) error {
 		return err
 	}
 	if runtime.GOOS == "windows" {
-		if e := client.RequireMJ1(context.Background()); e != nil {
+		if e := client.RequireDirectoryFeatures(context.Background()); e != nil {
 			return e
 		}
 		a, e := client.CheckIdentity(context.Background(), readIdentity())
@@ -1754,9 +1754,9 @@ func prepareState(f commonFlags, out *sayer) (*enroll.State, error) {
 		return nil, err
 	}
 	if runtime.GOOS == "windows" {
-		if err = prepareMJ1(context.Background(), st, client); err != nil {
-			if errors.Is(err, enroll.ErrMJ1Unavailable) {
-				out.say("MJ-1 feature check unavailable; service staged without enrollment")
+		if err = prepareDirectoryIdentity(context.Background(), st, client); err != nil {
+			if errors.Is(err, enroll.ErrDirectoryFeaturesUnavailable) {
+				out.say("directory feature check unavailable; service staged without enrollment")
 				return st, nil
 			}
 			return nil, err

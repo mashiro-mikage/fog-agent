@@ -99,9 +99,9 @@ func TestPrepareWindowsRunSeparatesUnavailableUnsupportedAndSupported(t *testing
 		wantErr    error
 		wantErrSet bool
 	}{
-		{name: "transport unavailable", wantErr: enroll.ErrMJ1Unavailable, wantErrSet: true},
-		{name: "reachable unsupported", status: http.StatusOK, wantErr: enroll.ErrMJ1Unsupported, wantErrSet: true},
-		{name: "supported", status: http.StatusOK, header: enroll.MJ1Feature + ", " + enroll.DirectoryTargetFeature},
+		{name: "transport unavailable", wantErr: enroll.ErrDirectoryFeaturesUnavailable, wantErrSet: true},
+		{name: "reachable unsupported", status: http.StatusOK, wantErr: enroll.ErrDirectoryFeaturesUnsupported, wantErrSet: true},
+		{name: "supported", status: http.StatusOK, header: enroll.DirectoryJoinTargetFeature + ", " + enroll.DirectoryTaskOperationsFeature},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := enroll.Load(t.TempDir())
@@ -177,7 +177,7 @@ func TestPrepareWindowsRunIdentityMismatchStopsBeforePolling(t *testing.T) {
 		switch r.URL.Path {
 		case "/agent/v1/enroll":
 			probeCalls++
-			w.Header().Set("X-FOG-Agent-Features", enroll.MJ1Feature+", "+enroll.DirectoryTargetFeature)
+			w.Header().Set("X-FOG-Agent-Features", enroll.DirectoryJoinTargetFeature+", "+enroll.DirectoryTaskOperationsFeature)
 		case "/agent/v1/identity/check":
 			identityCalls++
 			w.WriteHeader(http.StatusConflict)
@@ -278,7 +278,7 @@ func TestPrepareMJ1WithoutCertificateBindsKeyToLiveIdentityAndPreservesUncertain
 					http.Error(w, "unexpected request", http.StatusInternalServerError)
 					return
 				}
-				w.Header().Set("X-FOG-Agent-Features", enroll.MJ1Feature+", "+enroll.DirectoryTargetFeature)
+				w.Header().Set("X-FOG-Agent-Features", enroll.DirectoryJoinTargetFeature+", "+enroll.DirectoryTaskOperationsFeature)
 			}))
 			defer server.Close()
 			st.Config.ServerURL = server.URL
@@ -288,8 +288,8 @@ func TestPrepareMJ1WithoutCertificateBindsKeyToLiveIdentityAndPreservesUncertain
 			}
 			stubIdentity(t, live)
 			client := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
-			if err := prepareMJ1(context.Background(), st, client); err != nil {
-				t.Fatalf("prepareMJ1: %v", err)
+			if err := prepareDirectoryIdentity(context.Background(), st, client); err != nil {
+				t.Fatalf("prepareDirectoryIdentity: %v", err)
 			}
 
 			if featureProbes != 1 {

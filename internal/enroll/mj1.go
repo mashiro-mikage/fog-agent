@@ -19,12 +19,12 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 )
 
-const MJ1Feature = "directory-join-mj1"
-const DirectoryTargetFeature = "directory-task-operations-v3"
+const DirectoryJoinTargetFeature = "directory-join-target-v1"
+const DirectoryTaskOperationsFeature = "directory-task-operations-v1"
 
 // Setup may stage a service while offline; enrollment and run still stop here.
-var ErrMJ1Unavailable = errors.New("MJ-1 server feature check unavailable")
-var ErrMJ1Unsupported = errors.New("server does not support MJ-1; enrollment and polling stopped")
+var ErrDirectoryFeaturesUnavailable = errors.New("directory feature check unavailable")
+var ErrDirectoryFeaturesUnsupported = errors.New("server does not advertise directory-join-target-v1 and directory-task-operations-v1; enrollment and polling stopped")
 
 type IdentityAnswer struct {
 	Status   string `json:"status"`
@@ -36,10 +36,10 @@ type IdentityAnswer struct {
 }
 
 // The feature probe reuses the public enrollment noun over already trusted HTTPS.
-func (c *Client) RequireMJ1(ctx context.Context) error {
+func (c *Client) RequireDirectoryFeatures(ctx context.Context) error {
 	u, e := url.Parse(c.ServerURL)
 	if e != nil || u.Scheme != "https" {
-		return errors.New("MJ-1 requires trusted HTTPS")
+		return errors.New("directory feature check requires trusted HTTPS")
 	}
 	r, e := http.NewRequestWithContext(ctx, http.MethodGet, c.ServerURL+"/agent/v1/enroll", nil)
 	if e != nil {
@@ -47,27 +47,27 @@ func (c *Client) RequireMJ1(ctx context.Context) error {
 	}
 	resp, e := c.HTTP.Do(r)
 	if e != nil {
-		return ErrMJ1Unavailable
+		return ErrDirectoryFeaturesUnavailable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
-		return ErrMJ1Unavailable
+		return ErrDirectoryFeaturesUnavailable
 	}
 	features := strings.FieldsFunc(resp.Header.Get("X-FOG-Agent-Features"), func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t'
 	})
 	haveIdentity, haveTarget := false, false
 	for _, feature := range features {
-		haveIdentity = haveIdentity || feature == MJ1Feature
-		haveTarget = haveTarget || feature == DirectoryTargetFeature
+		haveIdentity = haveIdentity || feature == DirectoryJoinTargetFeature
+		haveTarget = haveTarget || feature == DirectoryTaskOperationsFeature
 	}
 	if resp.StatusCode != 200 || !haveIdentity || !haveTarget {
-		return ErrMJ1Unsupported
+		return ErrDirectoryFeaturesUnsupported
 	}
 	return nil
 }
 
-func (c *Client) mj1Exchange(ctx context.Context, path string, in, out any) (int, error) {
+func (c *Client) directoryExchange(ctx context.Context, path string, in, out any) (int, error) {
 	b, e := json.Marshal(in)
 	if e != nil {
 		return 0, e
@@ -79,23 +79,23 @@ func (c *Client) mj1Exchange(ctx context.Context, path string, in, out any) (int
 	r.Header.Set("Content-Type", "application/json")
 	resp, e := c.HTTP.Do(r)
 	if e != nil {
-		return 0, errors.New("MJ-1 exchange unavailable; do not repeat a mutation")
+		return 0, errors.New("directory protocol exchange unavailable; do not repeat a mutation")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 && resp.StatusCode != 409 {
-		return resp.StatusCode, errors.New("MJ-1 request refused")
+		return resp.StatusCode, errors.New("directory protocol request refused")
 	}
 	// In particular, never include an unparseable credential response in an error.
 	d := json.NewDecoder(io.LimitReader(resp.Body, 65537))
 	if e = d.Decode(out); e != nil {
-		return resp.StatusCode, errors.New("invalid MJ-1 response")
+		return resp.StatusCode, errors.New("invalid directory protocol response")
 	}
 	return resp.StatusCode, nil
 }
 
 func (c *Client) CheckIdentity(ctx context.Context, live identity.Host) (IdentityAnswer, error) {
 	var out IdentityAnswer
-	code, e := c.mj1Exchange(ctx, "/agent/v1/identity/check", map[string]any{"identity": live, "features": []string{MJ1Feature}}, &out)
+	code, e := c.directoryExchange(ctx, "/agent/v1/identity/check", map[string]any{"identity": live, "features": []string{DirectoryJoinTargetFeature}}, &out)
 	if e != nil {
 		return out, e
 	}
@@ -128,7 +128,7 @@ func (c *Client) StartRejoin(ctx context.Context, p directoryjoin.RejoinPlan) (*
 	if p.Version == 2 {
 		body["operation"] = p.Operation
 	}
-	code, e := c.mj1Exchange(ctx, "/agent/v1/directory/rejoin/start", body, &raw)
+	code, e := c.directoryExchange(ctx, "/agent/v1/directory/rejoin/start", body, &raw)
 	var out struct {
 		Status    string                `json:"status"`
 		Directory *directoryjoin.Policy `json:"directory"`

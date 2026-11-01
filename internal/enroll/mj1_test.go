@@ -45,17 +45,21 @@ func TestRequireMJ1StopsOnOldServerOrMissingFeatureHeader(t *testing.T) {
 		wantOK  bool
 		wantErr error
 	}{
-		{"old server route", http.StatusNotFound, "", false, ErrMJ1Unsupported},
-		{"missing feature header", http.StatusOK, "", false, ErrMJ1Unsupported},
-		{"temporarily unavailable", http.StatusServiceUnavailable, "", false, ErrMJ1Unavailable},
-		{"temporarily rate limited", http.StatusTooManyRequests, "", false, ErrMJ1Unavailable},
-		{"base feature only", http.StatusOK, MJ1Feature, false, ErrMJ1Unsupported},
-		{"both comma separated", http.StatusOK, MJ1Feature + ", " + DirectoryTargetFeature, true, nil},
-		{"new task operations feature v3", http.StatusOK, MJ1Feature + ", directory-task-operations-v3", true, nil},
-		{"old target feature v2", http.StatusOK, MJ1Feature + ", directory-join-target-v2", false, ErrMJ1Unsupported},
-		{"both space separated", http.StatusOK, MJ1Feature + " " + DirectoryTargetFeature, true, nil},
-		{"extra capability and reordered", http.StatusOK, "future-capability " + DirectoryTargetFeature + ", " + MJ1Feature, true, nil},
-		{"substring is not a token", http.StatusOK, "x-" + MJ1Feature + ", " + DirectoryTargetFeature, false, ErrMJ1Unsupported},
+		{"old server route", http.StatusNotFound, "", false, ErrDirectoryFeaturesUnsupported},
+		{"missing feature header", http.StatusOK, "", false, ErrDirectoryFeaturesUnsupported},
+		{"temporarily unavailable", http.StatusServiceUnavailable, "", false, ErrDirectoryFeaturesUnavailable},
+		{"temporarily rate limited", http.StatusTooManyRequests, "", false, ErrDirectoryFeaturesUnavailable},
+		{"new identity feature only", http.StatusOK, DirectoryJoinTargetFeature, false, ErrDirectoryFeaturesUnsupported},
+		{"both comma separated", http.StatusOK, DirectoryJoinTargetFeature + ", " + DirectoryTaskOperationsFeature, true, nil},
+		{"new task operations feature v1", http.StatusOK, DirectoryJoinTargetFeature + ", directory-task-operations-v1", true, nil},
+		{"legacy feature pair rejected", http.StatusOK, "directory-join-mj1, directory-task-operations-v3", false, ErrDirectoryFeaturesUnsupported},
+		{"legacy identity with new task feature rejected", http.StatusOK, "directory-join-mj1, " + DirectoryTaskOperationsFeature, false, ErrDirectoryFeaturesUnsupported},
+		{"new identity with legacy task feature rejected", http.StatusOK, DirectoryJoinTargetFeature + ", directory-task-operations-v3", false, ErrDirectoryFeaturesUnsupported},
+		{"old target feature v2 rejected", http.StatusOK, DirectoryJoinTargetFeature + ", directory-join-target-v2", false, ErrDirectoryFeaturesUnsupported},
+		{"both space separated", http.StatusOK, DirectoryJoinTargetFeature + " " + DirectoryTaskOperationsFeature, true, nil},
+		{"extra capability and reordered", http.StatusOK, "future-capability " + DirectoryTaskOperationsFeature + ", " + DirectoryJoinTargetFeature, true, nil},
+		{"identity substring is not a token", http.StatusOK, "x-" + DirectoryJoinTargetFeature + ", " + DirectoryTaskOperationsFeature, false, ErrDirectoryFeaturesUnsupported},
+		{"task feature substring is not a token", http.StatusOK, DirectoryJoinTargetFeature + ", " + DirectoryTaskOperationsFeature + "-preview", false, ErrDirectoryFeaturesUnsupported},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -70,9 +74,9 @@ func TestRequireMJ1StopsOnOldServerOrMissingFeatureHeader(t *testing.T) {
 				}
 				w.WriteHeader(tt.status)
 			}))
-			err := client.RequireMJ1(context.Background())
+			err := client.RequireDirectoryFeatures(context.Background())
 			if (err == nil) != tt.wantOK || (tt.wantErr != nil && !errors.Is(err, tt.wantErr)) {
-				t.Fatalf("RequireMJ1() error = %v, want success=%t", err, tt.wantOK)
+				t.Fatalf("RequireDirectoryFeatures() error = %v, want success=%t", err, tt.wantOK)
 			}
 			if calls != 1 {
 				t.Fatalf("feature probe made %d requests, want exactly one (%s)", calls, srv.URL)
@@ -462,11 +466,11 @@ func assertNoCloneClassification(t *testing.T, config Config) {
 
 func TestMJ1UnavailablePreservesOfflineSetupDistinction(t *testing.T) {
 	c, srv := mj1TLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }))
-	if err := c.RequireMJ1(context.Background()); err == nil || errors.Is(err, ErrMJ1Unavailable) {
+	if err := c.RequireDirectoryFeatures(context.Background()); err == nil || errors.Is(err, ErrDirectoryFeaturesUnavailable) {
 		t.Fatalf("unsupported server treated as offline: %v", err)
 	}
 	srv.Close()
-	if err := c.RequireMJ1(context.Background()); !errors.Is(err, ErrMJ1Unavailable) {
+	if err := c.RequireDirectoryFeatures(context.Background()); !errors.Is(err, ErrDirectoryFeaturesUnavailable) {
 		t.Fatalf("unreachable server classification: %v", err)
 	}
 }

@@ -26,7 +26,7 @@ var renameDirectory = func(ctx context.Context, policy directoryjoin.Policy, pla
 // Keep this boundary independent of GOOS so its ordering is testable offline.
 func prepareWindowsRun(ctx context.Context, st *enroll.State, c *enroll.Client, out *sayer) error {
 	return beforeDirectoryNetwork(func() bool { return checkProbation(st, out) }, func() error {
-		return prepareMJ1(ctx, st, c)
+		return prepareDirectoryIdentity(ctx, st, c)
 	})
 }
 
@@ -38,8 +38,8 @@ func beforeDirectoryNetwork(rollback func() bool, prepare func() error) error {
 }
 
 // Nothing cached may act until this process has checked its live identity.
-func prepareMJ1(ctx context.Context, st *enroll.State, c *enroll.Client) error {
-	if err := c.RequireMJ1(ctx); err != nil {
+func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.Client) error {
+	if err := c.RequireDirectoryFeatures(ctx); err != nil {
 		return err
 	}
 	live := readIdentity()
@@ -73,12 +73,12 @@ func prepareMJ1(ctx context.Context, st *enroll.State, c *enroll.Client) error {
 	return st.SaveConfig()
 }
 
-func attachMJ1(st *enroll.State, r *enroll.PollRequest) {
+func attachDirectoryContext(st *enroll.State, r *enroll.PollRequest) {
 	if runtime.GOOS != "windows" {
 		return
 	}
 	live := readIdentity()
-	r.Features = []string{enroll.MJ1Feature, enroll.DirectoryTargetFeature}
+	r.Features = []string{enroll.DirectoryJoinTargetFeature, enroll.DirectoryTaskOperationsFeature}
 	r.DirectoryObservation = st.DirectoryObservation
 	r.Identity = &live
 	r.DirectoryAttempt = localDirectoryAttempt(st.Dir)
